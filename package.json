@@ -44,6 +44,7 @@
       ]
     },
     "nsis": {
+      "warningsAsErrors": false,
       "oneClick": true,
       "perMachine": true,
       "allowToChangeInstallationDirectory": false,

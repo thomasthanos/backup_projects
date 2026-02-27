@@ -12,7 +12,9 @@ const PROJECTS_BACKUP_FOLDER = 'Projects Backup';
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git', '__pycache__', 'release']);
 
 // ─── App Data Directory — single source of truth for ALL saves ───────────────
-const APP_DATA_DIR = path.join('C:', 'Users', 'Fuck-Windows', 'AppData', 'Roaming', 'ThomasThanos', 'BackupStudio');
+// Χρησιμοποιούμε process.env.APPDATA για να δουλεύει σε οποιονδήποτε χρήστη
+// → C:\Users\<username>\AppData\Roaming\ThomasThanos\Backup-projects
+const APP_DATA_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ThomasThanos', 'Backup-projects');
 
 // All save files live under APP_DATA_DIR
 const CONFIG_FILE = path.join(APP_DATA_DIR, 'projects.json');
