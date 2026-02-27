@@ -1,7 +1,7 @@
 !macro customInit
-  # electron-builder will add productName (Backup-projects) automatically
-  # So we only set the parent path
-  StrCpy $INSTDIR "$PROGRAMFILES64\ThomasThanos"
+  # For one-click installer, we define the installation directory
+  # The product name will be appended automatically by electron-builder
+  StrCpy $INSTDIR "$PROGRAMFILES64\ThomasThanos\Backup-projects"
 !macroend
 
 !macro customInstall
