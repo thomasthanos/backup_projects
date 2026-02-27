@@ -97,7 +97,13 @@ npm start
 npm run build
 ```
 
-Δημιουργεί NSIS installer + portable `.exe` στον φάκελο `dist/`.
+Δημιουργεί στον φάκελο `dist/`:
+
+```
+dist/
+├── backup_project_installer.exe
+└── backup_project_portable.exe
+```
 
 ---
 

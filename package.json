@@ -54,7 +54,11 @@
       "uninstallerIcon": "backup.ico",
       "installerHeader": "backup.ico",
       "installerHeaderIcon": "backup.ico",
-      "include": "installer.nsh"
+      "include": "installer.nsh",
+      "artifactName": "backup_project_installer.${ext}"
+    },
+    "portable": {
+      "artifactName": "backup_project_portable.${ext}"
     }
   }
 }
