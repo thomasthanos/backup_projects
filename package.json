@@ -1,6 +1,6 @@
 {
   "name": "backup-manager",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Backup Manager for MakeYourLifeEasier",
   "author": "ThomasThanos <thomasthanos2@icloud.com>",
   "main": "main.js",
