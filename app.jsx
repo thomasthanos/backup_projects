@@ -1,5 +1,14 @@
 const { ipcRenderer } = require('electron');
 
+// ─── Date helper ─────────────────────────────────────────────────────────────
+const MONTHS_SHORT = ['Ιαν','Φεβ','Μαρ','Απρ','Μαΐ','Ιουν','Ιουλ','Αυγ','Σεπ','Οκτ','Νοε','Δεκ'];
+const formatDateShort = (timestamp) => {
+    try {
+        const d = new Date(timestamp);
+        return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+    } catch { return '—'; }
+};
+
 // ─── SVG Icons ───────────────────────────────────────────────────────────────
 const Icons = {
     Bolt: () => (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" /></svg>),
@@ -33,8 +42,251 @@ const Icons = {
     Edit: () => (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>),
 };
 
+// ─── Apps Showcase ──────────────────────────────────────────────────────────
+const SHOWCASE_APPS = [
+    { name: 'Souvlatzidiko Unlocker', desc: 'Steam idle & achievement unlocker', tag: 'steam-idler', color1: '#1b9af7', color2: '#1565c0', repo: 'steam-idler', url: 'https://github.com/thomasthanos/steam-idler', screenshot: './assets/screenshots/steamidler.png' },
+    { name: 'Make Your Life Easier', desc: 'All-in-one productivity desktop app', tag: 'MYLE', color1: '#10b981', color2: '#059669', repo: 'Make_Your_Life_Easier.A.E', url: 'https://github.com/thomasthanos/Make_Your_Life_Easier.A.E', screenshot: './assets/screenshots/makeyourlifeeasier.png' },
+    { name: 'AutoClicker Premium', desc: 'Advanced auto clicker with profiles', tag: 'clicker', color1: '#f59e0b', color2: '#d97706', repo: 'autoclicker_premium', url: 'https://github.com/thomasthanos/autoclicker_premium', screenshot: './assets/screenshots/autoclicker_premium.png' },
+    { name: 'GitHub Build & Release', desc: 'Auto build & publish GitHub releases', tag: 'CI/CD', color1: '#8b5cf6', color2: '#6d28d9', repo: 'Github-Build-Release', url: 'https://github.com/thomasthanos/Github-Build-Release', screenshot: './assets/screenshots/github release.png' },
+    { name: 'Discord Package Viewer', desc: 'Explore your Discord data package', tag: 'discord', color1: '#5865f2', color2: '#4752c4', repo: 'discord_package_viewer', url: 'https://github.com/thomasthanos/discord_package_viewer', screenshot: './assets/screenshots/discord_package_viewer.png' },
+];
+
+function AppsShowcase() {
+    const [active, setActive] = React.useState(0);
+    const [animating, setAnimating] = React.useState(false);
+    const [imgErrors, setImgErrors] = React.useState({});
+    // dlState per repo: { pct, done, error, filePath }
+    const [dlStates, setDlStates] = React.useState({});
+
+    React.useEffect(() => {
+        const t = setInterval(() => {
+            setAnimating(true);
+            setTimeout(() => {
+                setActive(i => (i + 1) % SHOWCASE_APPS.length);
+                setAnimating(false);
+            }, 300);
+        }, 7000);
+        return () => clearInterval(t);
+    }, []);
+
+    // Listen for download progress from main
+    React.useEffect(() => {
+        const handler = (event, data) => {
+            setDlStates(prev => ({
+                ...prev,
+                [data.repoSlug]: {
+                    pct: data.pct,
+                    done: !!data.done,
+                    error: data.error || null,
+                    filePath: data.filePath || null,
+                }
+            }));
+            // Auto-clear done/error after 4s
+            if (data.done || data.error) {
+                setTimeout(() => setDlStates(prev => { const n = {...prev}; delete n[data.repoSlug]; return n; }), 4000);
+            }
+        };
+        ipcRenderer.on('download-progress', handler);
+        return () => ipcRenderer.removeListener('download-progress', handler);
+    }, []);
+
+    const go = (idx) => {
+        if (idx === active) return;
+        setAnimating(true);
+        setTimeout(() => { setActive(idx); setAnimating(false); }, 300);
+    };
+
+    const handleDownload = async (app) => {
+        if (!app.repo) return;
+        const dl = dlStates[app.repo];
+        if (dl && !dl.done && !dl.error && dl.pct >= 0) return; // already downloading
+        setDlStates(prev => ({ ...prev, [app.repo]: { pct: 0, done: false, error: null } }));
+        await ipcRenderer.invoke('download-release', app.repo);
+    };
+
+    const app = SHOWCASE_APPS[active];
+    const hasImg = !imgErrors[active];
+    const dl = dlStates[app.repo] || null;
+    const isDownloading = dl && !dl.done && !dl.error && dl.pct >= 0;
+
+    return (
+        <div className="showcase-card">
+            <div className="showcase-bg" style={{'--c1': app.color1, '--c2': app.color2}}></div>
+            <div className="showcase-inner" style={{opacity: animating ? 0 : 1, transform: animating ? 'translateY(8px)' : 'translateY(0)', transition: 'opacity 0.3s ease, transform 0.3s ease'}}>
+                {/* Top row: info + icon */}
+                <div className="showcase-top">
+                    <div className="showcase-text">
+                        <div className="showcase-eyebrow">ThomasThanos · Open Source</div>
+                        <div className="showcase-title">{app.name}</div>
+                    </div>
+                    <div className="showcase-icon" style={{background: `linear-gradient(135deg, ${app.color1}25, ${app.color2}25)`, border: `1px solid ${app.color1}35`}}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke={app.color1} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" width="24" height="24"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+                    </div>
+                </div>
+
+                {/* Screenshot */}
+                <div className="showcase-img-wrap">
+                    {hasImg ? (
+                        <img
+                            src={app.screenshot}
+                            alt={app.name}
+                            className="showcase-img"
+                            onError={() => setImgErrors(prev => ({...prev, [active]: true}))}
+                        />
+                    ) : (
+                        <div className="showcase-img-placeholder" style={{borderColor: app.color1 + '30'}}>
+                            <svg viewBox="0 0 24 24" fill="none" stroke={app.color1} strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" width="32" height="32" style={{opacity:0.3}}><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg>
+                            <span style={{color: app.color1 + '55', fontSize: '11px', marginTop: '8px'}}>Δεν υπάρχει screenshot</span>
+                            <span style={{color: 'rgba(255,255,255,0.2)', fontSize: '10px', marginTop: '3px', fontFamily: "'JetBrains Mono', monospace"}}>assets/screenshots/{app.screenshot.split('/').pop()}</span>
+                        </div>
+                    )}
+                </div>
+
+                {/* Bottom row: github link + dots + download */}
+                <div className="showcase-bottom">
+                    <button className="showcase-link" onClick={() => ipcRenderer.invoke('open-url', app.url)}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" width="12" height="12"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+                        GitHub
+                    </button>
+                    <div className="showcase-dots">
+                        {SHOWCASE_APPS.map((_, i) => (
+                            <button key={i} className={`showcase-dot ${i === active ? 'active' : ''}`} style={i === active ? {background: app.color1} : {}} onClick={() => go(i)} />
+                        ))}
+                    </div>
+                    <div className="showcase-dl-wrap" style={{'--ac': app.color1}}>
+                        {isDownloading && (
+                            <div className="showcase-dl-bar-track">
+                                <div className="showcase-dl-bar-fill" style={{width: dl.pct >= 0 ? `${dl.pct}%` : '0%', background: app.color1}}></div>
+                                <span className="showcase-dl-bar-pct">{dl.pct >= 0 ? `${dl.pct}%` : '...'}</span>
+                            </div>
+                        )}
+                        {dl?.done && (
+                            <div className="showcase-dl-done">
+                                <svg viewBox="0 0 24 24" fill="none" stroke={app.color1} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" width="13" height="13"><polyline points="20 6 9 17 4 12"/></svg>
+                                <span style={{color: app.color1}}>Ολοκληρώθηκε!</span>
+                            </div>
+                        )}
+                        {dl?.error && dl.error !== 'cancelled' && (
+                            <div className="showcase-dl-done">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="#f43f5e" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" width="13" height="13"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                                <span style={{color: '#f43f5e'}}>Σφάλμα</span>
+                            </div>
+                        )}
+                        {!isDownloading && !dl?.done && !(dl?.error && dl.error !== 'cancelled') && (
+                            <button
+                                className="showcase-download-btn"
+                                onClick={() => handleDownload(app)}
+                            >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" width="13" height="13"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                Download
+                            </button>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
 // ─── Empty state for new project form ────────────────────────────────────────
 const emptyProject = { name: '', sourcePath: '', appExe: '', appName: '' };
+
+// ─── Home View (macOS Launchpad) ─────────────────────────────────────────────
+const ICON_GRADIENTS = [
+    ['#4f87ff','#7c6cf0'],['#10b981','#06b6d4'],['#f59e0b','#ef4444'],
+    ['#ec4899','#8b5cf6'],['#06b6d4','#4f87ff'],['#f97316','#f59e0b'],
+    ['#84cc16','#10b981'],['#e879f9','#ec4899'],
+];
+
+function HomeView({ projects, activeProjectId, onSwitchProject, onAddProject, isLoading, backupStatus }) {
+    const totalBackups = projects.reduce((s, p) => s + (p.backupCount || 0), 0);
+    const activeProj = projects.find(p => p.id === activeProjectId);
+
+    const MAX_PROJECTS = 9; // slot 10 is always the Add button
+    const sorted = [...projects]
+        .map((p, i) => ({ ...p, _origIdx: i }))
+        .sort((a, b) => {
+            if (a.id === activeProjectId) return -1;
+            if (b.id === activeProjectId) return 1;
+            return (b.backupCount || 0) - (a.backupCount || 0);
+        });
+    const visibleIds = new Set(sorted.slice(0, MAX_PROJECTS).map(p => p.id));
+
+    return (
+        <div className="lp-root">
+            <div className="lp-orb lp-orb1"></div>
+            <div className="lp-orb lp-orb2"></div>
+            <div className="lp-orb lp-orb3"></div>
+            <div className="lp-topbar">
+                <div className="lp-topbar-left">
+                    <div className="lp-brand-icon"><Icons.Bolt /></div>
+                    <div>
+                        <div className="lp-brand-name">Backup Studio</div>
+                        <div className="lp-brand-sub">Project Manager</div>
+                    </div>
+                </div>
+                <div className="lp-topbar-stats">
+                    <div className="lp-stat-pill">
+                        <span className="lp-stat-dot" style={{background:'#60a5fa'}}></span>
+                        <span><strong>{projects.length}</strong> projects</span>
+                    </div>
+                    <div className="lp-topbar-stats-divider"></div>
+                    <div className="lp-stat-pill">
+                        <span className="lp-stat-dot" style={{background:'#34d399'}}></span>
+                        <span><strong>{totalBackups}</strong> backups</span>
+                    </div>
+                    <div className="lp-topbar-stats-divider"></div>
+                    <div className="lp-stat-pill">
+                        <span className="lp-stat-dot" style={{background:'#a78bfa'}}></span>
+                        <span>Ενεργό: <strong>{activeProj?.name || '—'}</strong></span>
+                    </div>
+                </div>
+                <div className="lp-topbar-right">
+                    <button className="lp-add-btn" onClick={onAddProject}>
+                        <Icons.Plus /> Νέο Project
+                    </button>
+                </div>
+            </div>
+            <div className="lp-grid">
+                {projects.map((proj, idx) => {
+                    const [c1, c2] = ICON_GRADIENTS[idx % ICON_GRADIENTS.length];
+                    const isActive = proj.id === activeProjectId;
+                    const isVisible = visibleIds.has(proj.id);
+                    const initials = proj.name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
+                    if (!isVisible) return null;
+                    return (
+                        <div key={proj.id} className={`lp-icon-wrap ${isActive ? 'lp-active' : ''}`}>
+                            {isActive && <div className="lp-pulse-ring" style={{'--c1': c1, '--c2': c2}}></div>}
+                            <div className="lp-icon" style={{'--c1': c1, '--c2': c2}} onClick={() => onSwitchProject(proj.id)}>
+                                <span className="lp-icon-letter">{initials}</span>
+                            </div>
+                            {(proj.backupCount || 0) > 0 && (
+                                <div className="lp-badge">{proj.backupCount > 99 ? '99+' : proj.backupCount}</div>
+                            )}
+                            <div className="lp-label">
+                                <div className="lp-label-name">{proj.name}</div>
+                                {proj.totalSize && proj.totalSize !== '—' && <div className="lp-label-size">{proj.totalSize}</div>}
+                                {proj.lastBackup && <div className="lp-label-date">{proj.lastBackup.split(',')[0]}</div>}
+                            </div>
+                        </div>
+                    );
+                })}
+                <div className="lp-icon-wrap" onClick={onAddProject}>
+                    <div className="lp-icon lp-icon-add" style={{'--c1':'#4f87ff','--c2':'#7c6cf0'}}>
+                        <Icons.Plus />
+                    </div>
+                    <div className="lp-label"><div className="lp-label-name">Νέο Project</div></div>
+                </div>
+            </div>
+            {isLoading && (
+                <div className="lp-status-bar">
+                    <div className="lp-status-dot"></div>
+                    <span>{backupStatus || 'Backup σε εξέλιξη...'}</span>
+                </div>
+            )}
+        </div>
+    );
+}
 
 function App() {
     // ── Dropbox state ──
@@ -49,6 +301,39 @@ function App() {
     const [projectForm, setProjectForm]                   = React.useState(emptyProject);
     const [deleteProjectModal, setDeleteProjectModal]     = React.useState(null);
 
+    // ── View state ──
+    const [currentView, setCurrentView] = React.useState('home');
+
+    const switchView = (view) => {
+        if (view === currentView) return;
+        const root = document.getElementById('root');
+        const goingBig = view !== 'home';
+        // animateResize in main takes 220ms (16 steps × ~14ms)
+        const RESIZE_DURATION = 220;
+
+        // Phase 1: fade + slight scale out immediately
+        root.style.transition = 'opacity 0.12s ease, transform 0.12s ease';
+        root.style.opacity    = '0';
+        root.style.transform  = goingBig ? 'scale(0.96)' : 'scale(1.03)';
+
+        // Kick off window resize at the same time
+        ipcRenderer.invoke('set-view-mode', view);
+
+        // Phase 2: swap view content after fade-out (120ms)
+        setTimeout(() => {
+            setCurrentView(view);
+
+            // Phase 3: wait for resize to finish, then fade in
+            setTimeout(() => {
+                root.style.transition = 'opacity 0.18s ease, transform 0.18s cubic-bezier(0.22,1,0.36,1)';
+                root.style.opacity    = '1';
+                root.style.transform  = 'scale(1)';
+                setTimeout(() => { root.style.transition = ''; }, 200);
+            }, RESIZE_DURATION - 120 + 20); // wait remaining resize time + 20ms buffer
+        }, 120);
+    };
+    const [projectsStats, setProjectsStats] = React.useState([]);
+
     // ── Backups state ──
     const [backups, setBackups]           = React.useState([]);
     const [selectedBackup, setSelectedBackup] = React.useState(null);
@@ -59,6 +344,8 @@ function App() {
     const [isMaximized, setIsMaximized]   = React.useState(false);
     const [paths, setPaths]               = React.useState({ source: '', dest: '' });
     const [deleteModal, setDeleteModal]   = React.useState(null);
+
+    const [collapsedMonths, setCollapsedMonths] = React.useState(new Set());
 
     const [diffBackup1, setDiffBackup1]         = React.useState('');
     const [diffBackup2, setDiffBackup2]         = React.useState('');
@@ -95,13 +382,18 @@ function App() {
     }, [showProjectsDropdown]);
 
     // ── Project loaders ──
+    const refreshProjectsStats = async () => {
+        const stats = await ipcRenderer.invoke('get-all-projects-stats');
+        if (Array.isArray(stats)) setProjectsStats(stats);
+    };
+
     const loadProjects = async () => {
         const config = await ipcRenderer.invoke('get-projects');
         setProjects(config.projects);
         setActiveProjectId(config.activeProjectId);
-        // Load backups for that project
         await refreshBackups();
         await refreshPaths();
+        refreshProjectsStats(); // async, δεν περιμένουμε — γεμίζει τα icons αφού φορτώσουν
     };
 
     const refreshBackups = async () => {
@@ -135,6 +427,8 @@ function App() {
         setShowProjectsDropdown(false);
         await refreshBackups();
         await refreshPaths();
+        refreshProjectsStats();
+        switchView('backups');
     };
 
     // ── Project CRUD ──
@@ -270,6 +564,22 @@ function App() {
         return groups;
     }, [backups]);
 
+    // Auto-collapse all months except the first (current) when backups load
+    React.useEffect(() => {
+        const months = Object.keys(groupedBackups);
+        if (months.length > 1) {
+            setCollapsedMonths(new Set(months.slice(1)));
+        }
+    }, [Object.keys(groupedBackups).join(',')]);
+
+    const toggleMonth = (month) => {
+        setCollapsedMonths(prev => {
+            const next = new Set(prev);
+            next.has(month) ? next.delete(month) : next.add(month);
+            return next;
+        });
+    };
+
     const stats = getDiffStats();
     const activeProject = projects.find(p => p.id === activeProjectId);
 
@@ -287,6 +597,22 @@ function App() {
                     <div className="titlebar-icon"><Icons.Bolt /></div>
                     <span className="titlebar-title">Backup Studio</span>
                 </div>
+                <div className="titlebar-nav">
+                    <button
+                        className={`titlebar-nav-btn ${currentView === 'home' ? 'active' : ''}`}
+                        onClick={() => switchView('home')}
+                    >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{width:'13px',height:'13px'}}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                        Home
+                    </button>
+                    <button
+                        className={`titlebar-nav-btn ${currentView === 'backups' ? 'active' : ''}`}
+                        onClick={() => switchView('backups')}
+                    >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{width:'13px',height:'13px'}}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+                        Backups
+                    </button>
+                </div>
                 <div className="titlebar-controls">
                     <button className="titlebar-btn" onClick={() => handleWindowControl('minimize')}><Icons.Minimize /></button>
                     <button className="titlebar-btn" onClick={() => handleWindowControl('maximize')}>{isMaximized ? <Icons.Restore /> : <Icons.Maximize />}</button>
@@ -294,6 +620,20 @@ function App() {
                 </div>
             </div>
 
+            {currentView === 'home' ? (
+                <div className="home-wrapper">
+                    <div className="home-scroll">
+                        <HomeView
+                            projects={projectsStats.length ? projectsStats : projects}
+                            activeProjectId={activeProjectId}
+                            onSwitchProject={switchProject}
+                            onAddProject={openAddProjectModal}
+                            isLoading={isLoading}
+                            backupStatus={backupStatus}
+                        />
+                    </div>
+                </div>
+            ) : (
             <div className="app-wrapper">
                 {/* ── Sidebar ── */}
                 <div className="sidebar">
@@ -399,32 +739,50 @@ function App() {
                         </div>
                     </div>
 
-                    <div className="backup-list-section">
+                    <div className="backup-list-section" style={{flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minHeight:0}}>
                         <div className="list-header"><Icons.History /><span>Ιστορικό</span></div>
                         <div className="backup-list">
-                            {Object.entries(groupedBackups).map(([month, monthBackups]) => (
+                            {Object.entries(groupedBackups).map(([month, monthBackups], monthIdx) => {
+                                const isCollapsed = collapsedMonths.has(month);
+                                return (
                                 <div key={month} className="month-group">
-                                    <div className="month-label"><Icons.Calendar />{month}</div>
-                                    {monthBackups.map(backup => (
+                                    <div className={`month-label ${monthIdx > 0 ? 'month-label-clickable' : ''}`} onClick={() => monthIdx > 0 && toggleMonth(month)}>
+                                        <Icons.Calendar />
+                                        <span>{month}</span>
+                                        {monthIdx > 0 && (
+                                            <span className={`month-chevron ${isCollapsed ? '' : 'open'}`}>
+                                                <Icons.ChevronRight />
+                                            </span>
+                                        )}
+                                    </div>
+                                    {!isCollapsed && monthBackups.map(backup => (
                                         <div
                                             key={backup.name}
                                             className={`backup-item ${selectedBackup?.name === backup.name ? 'selected' : ''}`}
                                             onClick={() => setSelectedBackup(backup)}
                                         >
-                                            <div className="backup-item-row">
-                                                <span className="day-tag">D{backup.day}</span>
-                                                <span className="version-tag">V{backup.version}</span>
+                                            <div className="backup-item-icon">
+                                                <Icons.Package />
                                             </div>
-                                            <div className="backup-meta">
-                                                <span><Icons.Clock /> {backup.date}</span>
-                                                <span><Icons.HardDrive /> {backup.size}</span>
+                                            <div className="backup-item-info">
+                                                <div className="backup-item-name">{backup.name}</div>
+                                                <div className="backup-item-date">
+                                                    <Icons.Calendar />
+                                                    {formatDateShort(backup.timestamp)}
+                                                </div>
                                             </div>
+                                            {backup.name === backups[0]?.name && (
+                                                <span className="backup-item-size-badge">{backup.size}</span>
+                                            )}
                                         </div>
                                     ))}
                                 </div>
-                            ))}
+                                );
+                            })}
                         </div>
                     </div>
+
+
                 </div>
 
                 {/* ── Main content ── */}
@@ -447,24 +805,87 @@ function App() {
                     </div>
 
                     <div className="content-body">
-                        {activeTab === 'info' && selectedBackup && (
-                            <div className="info-grid">
-                                {selectedBackup.isMigrated && (
-                                    <div className="info-card wide warning-card">
-                                        <div className="info-card-icon amber"><Icons.AlertTriangle /></div>
-                                        <div className="info-card-label">Προειδοποίηση</div>
-                                        <div className="info-card-value" style={{ fontSize: '14px', fontWeight: '500', lineHeight: '1.5' }}>
-                                            Αυτό το backup δημιουργήθηκε πριν την ενημέρωση του συστήματος metadata. Η ημερομηνία βασίζεται στα στοιχεία του αρχείου.
+                        {activeTab === 'info' && selectedBackup && (() => {
+                            const backupIndex = backups.findIndex(b => b.name === selectedBackup.name);
+                            const prevBackup = backups[backupIndex + 1] || null;
+                            const nextBackup = backupIndex > 0 ? backups[backupIndex - 1] : null;
+                            const isLatest = backupIndex === 0;
+                            const positionLabel = `#${backups.length - backupIndex} από ${backups.length}`;
+                            return (
+                            <div className="info-layout">
+                                {/* ── Hero Banner ── */}
+                                <div className="info-hero">
+                                    <div className="info-hero-left">
+                                        <div className="info-hero-icon">
+                                            <Icons.Package />
+                                        </div>
+                                        <div>
+                                            <div className="info-hero-name">{selectedBackup.name}</div>
+                                            <div className="info-hero-meta">
+                                                <span className="info-hero-pill blue">Version {selectedBackup.version}</span>
+                                                <span className="info-hero-pill emerald">Day {selectedBackup.day}</span>
+                                                {isLatest && <span className="info-hero-pill gold">★ Τελευταίο</span>}
+                                                {selectedBackup.isMigrated && <span className="info-hero-pill amber">⚠ Legacy</span>}
+                                            </div>
                                         </div>
                                     </div>
+                                    <div className="info-hero-right">
+                                        <div className="info-hero-stat">
+                                            <span className="info-hero-stat-value">{selectedBackup.size}</span>
+                                            <span className="info-hero-stat-label">Μέγεθος</span>
+                                        </div>
+                                        <div className="info-hero-divider"></div>
+                                        <div className="info-hero-stat">
+                                            <span className="info-hero-stat-value">{positionLabel}</span>
+                                            <span className="info-hero-stat-label">Θέση</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* ── Metrics Row ── */}
+                                <div className="info-metrics">
+                                    <div className="info-metric">
+                                        <div className="info-metric-icon emerald"><Icons.Calendar /></div>
+                                        <div className="info-metric-body">
+                                            <div className="info-metric-label">Ημερομηνία</div>
+                                            <div className="info-metric-value">{selectedBackup.date}</div>
+                                        </div>
+                                    </div>
+                                    <div className="info-metric">
+                                        <div className="info-metric-icon blue"><Icons.Tag /></div>
+                                        <div className="info-metric-body">
+                                            <div className="info-metric-label">Έκδοση</div>
+                                            <div className="info-metric-value">V{selectedBackup.version}</div>
+                                        </div>
+                                    </div>
+                                    <div className="info-metric">
+                                        <div className="info-metric-icon amber"><Icons.HardDrive /></div>
+                                        <div className="info-metric-body">
+                                            <div className="info-metric-label">Μέγεθος</div>
+                                            <div className="info-metric-value">{selectedBackup.size}</div>
+                                        </div>
+                                    </div>
+                                    <div className="info-metric">
+                                        <div className="info-metric-icon violet"><Icons.Clock /></div>
+                                        <div className="info-metric-body">
+                                            <div className="info-metric-label">Ημέρα Μήνα</div>
+                                            <div className="info-metric-value">Day {selectedBackup.day}</div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* ── Apps Showcase ── */}
+                                <AppsShowcase />
+
+                                {selectedBackup.isMigrated && (
+                                    <div className="info-warning-banner">
+                                        <Icons.AlertTriangle />
+                                        <span>Αυτό το backup δημιουργήθηκε πριν την ενημέρωση metadata. Η ημερομηνία βασίζεται στα στοιχεία αρχείου.</span>
+                                    </div>
                                 )}
-                                <div className="info-card"><div className="info-card-icon emerald"><Icons.Calendar /></div><div className="info-card-label">Ημέρα</div><div className="info-card-value">Day {selectedBackup.day}</div></div>
-                                <div className="info-card"><div className="info-card-icon blue"><Icons.Tag /></div><div className="info-card-label">Έκδοση</div><div className="info-card-value">Version {selectedBackup.version}</div></div>
-                                <div className="info-card"><div className="info-card-icon amber"><Icons.HardDrive /></div><div className="info-card-label">Μέγεθος</div><div className="info-card-value">{selectedBackup.size}</div></div>
-                                <div className="info-card"><div className="info-card-icon violet"><Icons.Clock /></div><div className="info-card-label">Δημιουργήθηκε</div><div className="info-card-value">{selectedBackup.date}</div></div>
-                                <div className="info-card wide"><div className="info-card-icon blue"><Icons.Folder /></div><div className="info-card-label">Διαδρομή</div><div className="info-card-value mono">{selectedBackup.path}</div></div>
                             </div>
-                        )}
+                            );
+                        })()}
 
                         {activeTab === 'diff' && (
                             <div className="diff-wrapper">
@@ -535,6 +956,7 @@ function App() {
                     </div>
                 </div>
             </div>
+            )} {/* end currentView ternary */}
 
             {/* ── File diff modal ── */}
             {selectedFileDiff && (
@@ -715,8 +1137,16 @@ function App() {
 
             {toast && (
                 <div className={`toast ${toast.isError ? 'error' : ''}`}>
-                    {toast.isError ? <Icons.AlertCircle /> : <Icons.Check />}
-                    {toast.message}
+                    <div className="toast-icon-wrap">
+                        {toast.isError ? <Icons.AlertCircle /> : <Icons.Check />}
+                    </div>
+                    <div className="toast-body">
+                        <div className="toast-label">{toast.isError ? 'Σφάλμα' : 'Επιτυχία'}</div>
+                        <div className="toast-message">{toast.message}</div>
+                    </div>
+                    <div className="toast-progress">
+                        <div className="toast-progress-fill"></div>
+                    </div>
                 </div>
             )}
         </>

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs-extra');
 const { exec, execSync } = require('child_process');
@@ -116,11 +116,17 @@ function resolveDestPath(project) {
 let mainWindow;
 
 function createWindow() {
+    const { screen } = require('electron');
+    const { workArea } = screen.getPrimaryDisplay();
+    const W = 1000, H = 700;
+    const x = Math.round(workArea.x + (workArea.width  - W) / 2);
+    const y = Math.round(workArea.y + (workArea.height - H) / 2);
+
     mainWindow = new BrowserWindow({
-        width: 1280,
-        height: 850,
-        minWidth: 1000,
-        minHeight: 700,
+        width: W, height: H, x, y,
+        minWidth: W, minHeight: H,
+        resizable: false,
+        maximizable: false,
         frame: false,
         webPreferences: { nodeIntegration: true, contextIsolation: false },
         icon: path.join(__dirname, 'backup.ico'),
@@ -142,6 +148,58 @@ ipcMain.handle('window-minimize',     () => mainWindow.minimize());
 ipcMain.handle('window-maximize',     () => mainWindow.isMaximized() ? mainWindow.unmaximize() : mainWindow.maximize());
 ipcMain.handle('window-close',        () => mainWindow.close());
 ipcMain.handle('window-is-maximized', () => mainWindow.isMaximized());
+
+// ─── Smooth resize + re-center ───────────────────────────────────────────────
+let _resizeTimer = null;
+function animateResize(targetW, targetH, minW, minH) {
+    const { screen } = require('electron');
+    const [curW, curH] = mainWindow.getSize();
+    const [curX, curY] = mainWindow.getPosition();
+    const display = screen.getDisplayNearestPoint({ x: curX, y: curY });
+    const { bounds } = display;
+    const targetX = Math.round(bounds.x + (bounds.width  - targetW) / 2);
+    const targetY = Math.round(bounds.y + (bounds.height - targetH) / 2);
+
+    // already there
+    if (curW === targetW && curH === targetH && curX === targetX && curY === targetY) return;
+
+    if (_resizeTimer) { clearInterval(_resizeTimer); _resizeTimer = null; }
+
+    mainWindow.setResizable(true);
+    mainWindow.setMaximizable(false);
+    mainWindow.setMinimumSize(minW, minH);
+
+    const STEPS = 14;
+    const MS    = 14; // ~70fps, total ~200ms
+    let step = 0;
+    const ease = t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2;
+
+    _resizeTimer = setInterval(() => {
+        step++;
+        const t = ease(step / STEPS);
+        mainWindow.setBounds({
+            x:      Math.round(curX + (targetX - curX) * t),
+            y:      Math.round(curY + (targetY - curY) * t),
+            width:  Math.round(curW + (targetW - curW) * t),
+            height: Math.round(curH + (targetH - curH) * t),
+        });
+        if (step >= STEPS) {
+            clearInterval(_resizeTimer);
+            _resizeTimer = null;
+            mainWindow.setBounds({ x: targetX, y: targetY, width: targetW, height: targetH });
+            mainWindow.setResizable(false);
+        }
+    }, MS);
+}
+
+ipcMain.handle('set-view-mode', (event, view) => {
+    if (view === 'home') {
+        animateResize(1000, 700, 1000, 700);
+    } else {
+        animateResize(1280, 850, 1280, 850);
+    }
+    return { success: true };
+});
 
 // ─── Dropbox IPC ──────────────────────────────────────────────────────────────
 ipcMain.handle('get-dropbox-status', () => getDropboxStatus());
@@ -199,6 +257,54 @@ ipcMain.handle('set-active-project', (event, projectId) => {
     config.activeProjectId = projectId;
     saveConfig(config);
     return { success: true };
+});
+
+ipcMain.handle('get-all-projects-stats', () => {
+    const config = loadConfig();
+    const dropboxStatus = getDropboxStatus();
+
+    return config.projects.map(project => {
+        let backupCount = 0;
+        let totalSizeBytes = 0;
+        let lastBackupDate = null;
+        let lastVersion = 0;
+
+        try {
+            if (dropboxStatus.found) {
+                const destPath = path.join(dropboxStatus.path, PROJECTS_BACKUP_FOLDER, project.appName);
+                if (fs.existsSync(destPath)) {
+                    const monthFolders = fs.readdirSync(destPath)
+                        .filter(f => fs.statSync(path.join(destPath, f)).isDirectory()
+                                  && f.toLowerCase() !== 'all - pre release backups');
+
+                    for (const mf of monthFolders) {
+                        const monthPath = path.join(destPath, mf);
+                        const backupFolders = fs.readdirSync(monthPath)
+                            .filter(f => f.startsWith(project.appName)
+                                      && fs.statSync(path.join(monthPath, f)).isDirectory());
+
+                        for (const bf of backupFolders) {
+                            const fullPath = path.join(monthPath, bf);
+                            backupCount++;
+                            totalSizeBytes += getFolderSizeRaw(fullPath);
+                            const mtime = fs.statSync(fullPath).mtime;
+                            if (!lastBackupDate || mtime > lastBackupDate) lastBackupDate = mtime;
+                            const m = bf.match(/_V(\d+)$/);
+                            if (m) lastVersion = Math.max(lastVersion, parseInt(m[1]));
+                        }
+                    }
+                }
+            }
+        } catch {}
+
+        return {
+            ...project,
+            backupCount,
+            totalSize: totalSizeBytes > 0 ? formatBytes(totalSizeBytes) : '—',
+            lastBackup: lastBackupDate ? lastBackupDate.toLocaleString('el-GR') : null,
+            lastVersion
+        };
+    });
 });
 
 ipcMain.handle('select-folder', async () => {
@@ -497,4 +603,93 @@ ipcMain.handle('get-file-diff', async (event, backup1Path, backup2Path, filePath
 ipcMain.handle('open-folder', (event, folderPath) => {
     exec(`explorer "${folderPath}"`);
     return { success: true };
+});
+
+ipcMain.handle('open-url', (event, url) => {
+    shell.openExternal(url);
+    return { success: true };
+});
+
+ipcMain.handle('fetch-release-info', async (event, repoSlug) => {
+    try {
+        const https = require('https');
+        const apiUrl = `https://api.github.com/repos/thomasthanos/${repoSlug}/releases/latest`;
+        const data = await new Promise((resolve, reject) => {
+            https.get(apiUrl, { headers: { 'User-Agent': 'BackupStudio' } }, (res) => {
+                let body = '';
+                res.on('data', chunk => body += chunk);
+                res.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+            }).on('error', reject);
+        });
+        const asset = data.assets?.find(a => a.name.endsWith('.exe') || a.name.endsWith('.zip') || a.name.endsWith('.msi'));
+        if (!asset) return { success: false, error: 'Δεν βρέθηκε release asset' };
+        return { success: true, url: asset.browser_download_url, name: asset.name, size: asset.size, version: data.tag_name };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('download-release', async (event, repoSlug) => {
+    try {
+        const { net } = require('electron');
+        const fs2 = require('fs');
+
+        // 1. Fetch release info via electron.net (handles auth/redirects)
+        const apiUrl = `https://api.github.com/repos/thomasthanos/${repoSlug}/releases/latest`;
+        const data = await new Promise((resolve, reject) => {
+            const req = net.request({ url: apiUrl, method: 'GET' });
+            req.setHeader('User-Agent', 'BackupStudio');
+            req.setHeader('Accept', 'application/vnd.github+json');
+            let body = '';
+            req.on('response', (res) => {
+                res.on('data', chunk => body += chunk.toString());
+                res.on('end', () => { try { resolve(JSON.parse(body)); } catch(e) { reject(e); } });
+                res.on('error', reject);
+            });
+            req.on('error', reject);
+            req.end();
+        });
+
+        const asset = data.assets?.find(a =>
+            a.name.endsWith('.exe') || a.name.endsWith('.zip') || a.name.endsWith('.msi')
+        );
+        if (!asset) return { success: false, error: 'Δεν βρέθηκε release asset' };
+
+        // 2. Ask user where to save
+        const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
+            title: `Αποθήκευση ${asset.name}`,
+            defaultPath: path.join(os.homedir(), 'Downloads', asset.name),
+        });
+        if (canceled || !filePath) return { success: false, error: 'cancelled' };
+
+        const totalSize = asset.size;
+
+        // 3. Download via electron.net — follows all redirects automatically
+        await new Promise((resolve, reject) => {
+            const req = net.request({ url: asset.browser_download_url, method: 'GET' });
+            req.setHeader('User-Agent', 'BackupStudio');
+            const file = fs2.createWriteStream(filePath);
+            let downloaded = 0;
+            req.on('response', (res) => {
+                res.on('data', chunk => {
+                    file.write(chunk);
+                    downloaded += chunk.length;
+                    const pct = totalSize > 0 ? Math.round((downloaded / totalSize) * 100) : -1;
+                    mainWindow.webContents.send('download-progress', { repoSlug, pct, downloaded, total: totalSize });
+                });
+                res.on('end', () => { file.end(); resolve(); });
+                res.on('error', (e) => { file.destroy(); reject(e); });
+            });
+            req.on('error', (e) => { file.destroy(); reject(e); });
+            req.end();
+        });
+
+        mainWindow.webContents.send('download-progress', { repoSlug, pct: 100, done: true, filePath });
+        return { success: true, filePath, name: asset.name };
+
+    } catch (e) {
+        if (e.message !== 'cancelled')
+            mainWindow.webContents.send('download-progress', { repoSlug, pct: -1, error: e.message });
+        return { success: false, error: e.message };
+    }
 });
