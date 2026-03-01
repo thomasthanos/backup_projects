@@ -114,6 +114,7 @@ function resolveDestPath(project) {
 
 // ─── Window ──────────────────────────────────────────────────────────────────
 let mainWindow;
+let splashWindow;
 
 function createWindow() {
     const { screen } = require('electron');
@@ -128,19 +129,57 @@ function createWindow() {
         resizable: false,
         maximizable: false,
         frame: false,
-        webPreferences: { nodeIntegration: true, contextIsolation: false },
+        webPreferences: { nodeIntegration: true, contextIsolation: false, preload: path.join(__dirname, 'preload-simple.js') },
         icon: path.join(__dirname, 'backup.ico'),
         backgroundColor: '#0c0c14',
         show: false
     });
     mainWindow.loadFile('index.html');
-    mainWindow.once('ready-to-show', () => mainWindow.show());
+
+    // Μόλις είναι έτοιμο: κλείσιμο splash και εμφάνιση main window
+    mainWindow.webContents.once('did-finish-load', () => {
+        // Δώσε χρόνο στο React να κάνει render πριν εμφανιστεί το main window
+        setTimeout(() => {
+            if (splashWindow && !splashWindow.isDestroyed()) {
+                splashWindow.close();
+                splashWindow = null;
+            }
+            mainWindow.show();
+            mainWindow.focus();
+        }, 900);
+    });
+}
+
+// Ανοίγει ΑΜΕΣΩΣ splash window — πριν φορτωθεί οτιδήποτε άλλο
+function createSplashWindow() {
+    const { screen } = require('electron');
+    const { bounds } = screen.getPrimaryDisplay();
+
+    splashWindow = new BrowserWindow({
+        width: 320, height: 360,
+        x: Math.round(bounds.x + (bounds.width  - 320) / 2),
+        y: Math.round(bounds.y + (bounds.height - 360) / 2),
+        frame: false,
+        transparent: true,
+        resizable: false,
+        movable: false,
+        alwaysOnTop: true,
+        skipTaskbar: true,
+        webPreferences: { nodeIntegration: false, contextIsolation: true },
+        icon: path.join(__dirname, 'backup.ico'),
+        backgroundColor: '#00000000',
+    });
+    splashWindow.loadFile('splash.html');
+    splashWindow.once('ready-to-show', () => splashWindow.show());
 }
 
 // Force Electron to store ALL its data (localStorage, cache, etc.) in our folder
 app.setPath('userData', APP_DATA_DIR);
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+    createSplashWindow(); // 1ο: splash αμέσως
+    createWindow();       // 2ο: main window στο background
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 
 // ─── Window controls ──────────────────────────────────────────────────────────

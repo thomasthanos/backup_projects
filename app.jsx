@@ -290,11 +290,13 @@ function HomeView({ projects, activeProjectId, onSwitchProject, onAddProject, is
 
 function App() {
     // ── Dropbox state ──
-    const [dropboxStatus, setDropboxStatus] = React.useState({ found: null, running: null, path: null });
+    const [dropboxStatus, setDropboxStatus] = React.useState(
+        window.__initialData?.dropboxStatus || { found: null, running: null, path: null }
+    );
 
     // ── Projects state ──
-    const [projects, setProjects]               = React.useState([]);
-    const [activeProjectId, setActiveProjectId] = React.useState(null);
+    const [projects, setProjects]               = React.useState(window.__initialData?.projects || []);
+    const [activeProjectId, setActiveProjectId] = React.useState(window.__initialData?.activeProjectId || null);
     const [showProjectsDropdown, setShowProjectsDropdown] = React.useState(false);
     const [showProjectModal, setShowProjectModal]         = React.useState(false);
     const [editingProject, setEditingProject]             = React.useState(null); // null = add new
@@ -332,7 +334,7 @@ function App() {
             }, RESIZE_DURATION - 120 + 20); // wait remaining resize time + 20ms buffer
         }, 120);
     };
-    const [projectsStats, setProjectsStats] = React.useState([]);
+    const [projectsStats, setProjectsStats] = React.useState(window.__initialData?.projectsStats || []);
 
     // ── Backups state ──
     const [backups, setBackups]           = React.useState([]);
@@ -358,7 +360,19 @@ function App() {
         checkDropbox();
         ipcRenderer.on('backup-status', (event, status) => setBackupStatus(status));
         ipcRenderer.invoke('window-is-maximized').then(setIsMaximized);
-        return () => ipcRenderer.removeAllListeners('backup-status');
+
+        // Αν τα stats δεν έχουν κατεβεί ακόμα (βγαίνουν background), θέτε callback να ενημερώσει το state
+        if (!window.__initialData?.projectsStats) {
+            window.__statsReady = (stats) => {
+                if (Array.isArray(stats)) setProjectsStats(stats);
+                window.__statsReady = null;
+            };
+        }
+
+        return () => {
+            ipcRenderer.removeAllListeners('backup-status');
+            window.__statsReady = null;
+        };
     }, []);
 
     const checkDropbox = async () => {
@@ -1157,4 +1171,5 @@ function App() {
 if (!window.__reactRoot) {
     window.__reactRoot = ReactDOM.createRoot(document.getElementById('root'));
 }
+
 window.__reactRoot.render(<App />);
