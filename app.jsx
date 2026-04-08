@@ -198,7 +198,7 @@ const ICON_GRADIENTS = [
     ['#84cc16','#10b981'],['#e879f9','#ec4899'],
 ];
 
-function HomeView({ projects, activeProjectId, onSwitchProject, onAddProject, isLoading, backupStatus }) {
+function HomeView({ projects, activeProjectId, onSwitchProject, onAddProject, onRequestDeleteProject, isLoading, backupStatus }) {
     const totalBackups = projects.reduce((s, p) => s + (p.backupCount || 0), 0);
     const activeProj = projects.find(p => p.id === activeProjectId);
 
@@ -253,9 +253,18 @@ function HomeView({ projects, activeProjectId, onSwitchProject, onAddProject, is
                     const isActive = proj.id === activeProjectId;
                     const isVisible = visibleIds.has(proj.id);
                     const initials = proj.name.split(' ').map(w => w[0]).join('').slice(0,2).toUpperCase();
+                    const canDelete = projects.length > 1;
                     if (!isVisible) return null;
                     return (
-                        <div key={proj.id} className={`lp-icon-wrap ${isActive ? 'lp-active' : ''}`}>
+                        <div
+                            key={proj.id}
+                            className={`lp-icon-wrap ${isActive ? 'lp-active' : ''}`}
+                            title={canDelete ? 'Left click: open project • Right click: delete project' : 'Left click: open project'}
+                            onContextMenu={e => {
+                                e.preventDefault();
+                                if (canDelete) onRequestDeleteProject(proj);
+                            }}
+                        >
                             {isActive && <div className="lp-pulse-ring" style={{'--c1': c1, '--c2': c2}}></div>}
                             <div className="lp-icon" style={{'--c1': c1, '--c2': c2}} onClick={() => onSwitchProject(proj.id)}>
                                 <span className="lp-icon-letter">{initials}</span>
@@ -302,6 +311,7 @@ function App() {
     const [editingProject, setEditingProject]             = React.useState(null); // null = add new
     const [projectForm, setProjectForm]                   = React.useState(emptyProject);
     const [deleteProjectModal, setDeleteProjectModal]     = React.useState(null);
+    const [isDeletingProject, setIsDeletingProject]       = React.useState(false);
 
     // ── View state ──
     const [currentView, setCurrentView] = React.useState('home');
@@ -398,8 +408,20 @@ function App() {
     // ── Project loaders ──
     const refreshProjectsStats = async () => {
         const stats = await ipcRenderer.invoke('get-all-projects-stats');
-        if (Array.isArray(stats)) setProjectsStats(stats);
+        if (Array.isArray(stats)) {
+            setProjectsStats(stats);
+            return stats;
+        }
+        return [];
     };
+
+    const displayProjects = React.useMemo(() => {
+        const statsById = new Map((projectsStats || []).map(project => [project.id, project]));
+        return (projects || []).map(project => ({
+            ...project,
+            ...(statsById.get(project.id) || {})
+        }));
+    }, [projects, projectsStats]);
 
     const loadProjects = async () => {
         const config = await ipcRenderer.invoke('get-projects');
@@ -493,6 +515,7 @@ function App() {
     };
 
     const handleDeleteProject = async (project) => {
+        setIsDeletingProject(true);
         const result = await ipcRenderer.invoke('remove-project', project.id);
         if (result.success) {
             showToast(`Project "${project.name}" διαγράφηκε`);
@@ -502,9 +525,19 @@ function App() {
             showToast(result.error, true);
             setDeleteProjectModal(null);
         }
+        setIsDeletingProject(false);
     };
 
     // ── Backup ops ──
+    const requestDeleteProject = (project) => {
+        if (projects.length <= 1) {
+            showToast('Πρέπει να υπάρχει τουλάχιστον ένα project.', true);
+            return;
+        }
+        setDeleteProjectModal(project);
+        setShowProjectsDropdown(false);
+    };
+
     const showToast = (message, isError = false) => {
         setToast({ message, isError });
         setTimeout(() => setToast(null), 4000);
@@ -638,10 +671,11 @@ function App() {
                 <div className="home-wrapper">
                     <div className="home-scroll">
                         <HomeView
-                            projects={projectsStats.length ? projectsStats : projects}
+                            projects={displayProjects}
                             activeProjectId={activeProjectId}
                             onSwitchProject={switchProject}
                             onAddProject={openAddProjectModal}
+                            onRequestDeleteProject={requestDeleteProject}
                             isLoading={isLoading}
                             backupStatus={backupStatus}
                         />
@@ -721,7 +755,7 @@ function App() {
                                                     <button
                                                         className="project-icon-btn danger"
                                                         title="Διαγραφή"
-                                                        onClick={() => { setDeleteProjectModal(p); setShowProjectsDropdown(false); }}
+                                                        onClick={() => requestDeleteProject(p)}
                                                     ><Icons.Trash /></button>
                                                 )}
                                             </div>
@@ -1021,6 +1055,7 @@ function App() {
                             <div className="delete-icon-wrapper"><Icons.AlertTriangle /></div>
                             <div className="delete-title">Διαγραφή Project</div>
                             <div className="delete-message">Θα διαγραφεί μόνο η ρύθμιση. Τα backup αρχεία σου παραμένουν στο δίσκο.</div>
+                            <div className="delete-message"><strong>Θα διαγραφεί και ο φάκελος backup του project από το Dropbox.</strong></div>
                             <div className="delete-backup-name">{deleteProjectModal.name}</div>
                             <div className="delete-actions">
                                 <button className="btn btn-cancel" onClick={() => setDeleteProjectModal(null)}><Icons.Close />Ακύρωση</button>

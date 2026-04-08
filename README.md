@@ -35,12 +35,27 @@ Modern Electron app για backup projects με Dropbox integration, multi-proje
 
 ## ⚙️ App Data
 
-Όλες οι ρυθμίσεις και saves της εφαρμογής αποθηκεύονται στο:
+Η εφαρμογή κρατάει το config τοπικά και κάνει mirror και μέσα στο Dropbox, ώστε να μπορεί να επανέλθει μετά από reinstall ή format.
+
+Local config:
 
 ```
-C:\Users\Fuck-Windows\AppData\Roaming\ThomasThanos\BackupStudio\
+C:\Users\<username>\AppData\Roaming\ThomasThanos\Backup-projects\
 └── projects.json    ← λίστα projects + active project
 ```
+
+Dropbox mirror:
+
+```
+{Dropbox}\Projects Backup\
+└── .backup-projects.json
+```
+
+Αν λείπει το τοπικό `projects.json`, η εφαρμογή προσπαθεί αυτόματα:
+
+- να κάνει restore από παλιότερο local config (`BackupStudio`)
+- να κάνει restore από το Dropbox mirror
+- να ξαναχτίσει τη λίστα projects από υπάρχοντα backup folders στο Dropbox
 
 ---
 

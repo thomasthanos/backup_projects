@@ -10,14 +10,22 @@ const PROJECTS_BACKUP_FOLDER = 'Projects Backup';
 
 // Folders to always skip during backup
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', '.git', '__pycache__', 'release']);
+const EXCLUDED_FILE_EXTENSIONS = new Set(['.zip', '.rar']);
 
 // ─── App Data Directory — single source of truth for ALL saves ───────────────
 // Χρησιμοποιούμε process.env.APPDATA για να δουλεύει σε οποιονδήποτε χρήστη
 // → C:\Users\<username>\AppData\Roaming\ThomasThanos\Backup-projects
-const APP_DATA_DIR = path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'ThomasThanos', 'Backup-projects');
+const APPDATA_ROOT = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+const APP_VENDOR_DIR = path.join(APPDATA_ROOT, 'ThomasThanos');
+const APP_DATA_DIR = path.join(APP_VENDOR_DIR, 'Backup-projects');
+const LEGACY_APP_DATA_DIRS = [
+    path.join(APP_VENDOR_DIR, 'BackupStudio'),
+].filter(dir => dir !== APP_DATA_DIR);
+const DROPBOX_CONFIG_FILE_NAME = '.backup-projects.json';
 
 // All save files live under APP_DATA_DIR
 const CONFIG_FILE = path.join(APP_DATA_DIR, 'projects.json');
+let lastMirroredConfigJson = null;
 
 // Ensure the directory exists before any write
 function ensureAppDataDir() {
@@ -35,25 +43,164 @@ const DEFAULT_PROJECT = {
 
 // ─── Config helpers ───────────────────────────────────────────────────────────
 function loadConfig() {
-    try {
-        if (fs.existsSync(CONFIG_FILE)) {
-            const raw = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-            if (!raw.projects || raw.projects.length === 0) {
-                raw.projects = [DEFAULT_PROJECT];
-                raw.activeProjectId = 'default';
-            }
-            return raw;
-        }
-    } catch (e) { /* fall through */ }
+    const primaryConfig = readConfigCandidate(CONFIG_FILE);
+    if (primaryConfig) {
+        syncConfigToDropbox(primaryConfig.config);
+        return primaryConfig.config;
+    }
 
-    const config = { activeProjectId: 'default', projects: [DEFAULT_PROJECT] };
+    const legacyConfig = getLatestConfigCandidate(
+        LEGACY_APP_DATA_DIRS.map(dir => path.join(dir, 'projects.json'))
+    );
+    if (legacyConfig) {
+        writeConfigFile(CONFIG_FILE, legacyConfig.config);
+        syncConfigToDropbox(legacyConfig.config);
+        return legacyConfig.config;
+    }
+
+    const dropboxConfig = readConfigCandidate(getDropboxConfigFile());
+    if (dropboxConfig) {
+        writeConfigFile(CONFIG_FILE, dropboxConfig.config);
+        return dropboxConfig.config;
+    }
+
+    const restoredProjects = restoreProjectsFromDropboxFolders();
+    if (restoredProjects.length > 0) {
+        const config = normalizeConfig({
+            activeProjectId: restoredProjects[0].id,
+            projects: restoredProjects
+        });
+        saveConfig(config);
+        return config;
+    }
+
+    const config = normalizeConfig({ activeProjectId: 'default', projects: [{ ...DEFAULT_PROJECT }] });
     saveConfig(config);
     return config;
 }
 
 function saveConfig(config) {
-    ensureAppDataDir();
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf8');
+    const normalized = normalizeConfig(config);
+    writeConfigFile(CONFIG_FILE, normalized);
+    syncConfigToDropbox(normalized);
+}
+
+function normalizeConfig(raw) {
+    const config = raw && typeof raw === 'object' ? { ...raw } : {};
+    const projects = Array.isArray(config.projects)
+        ? config.projects
+            .filter(project => project && typeof project === 'object')
+            .map((project, index) => {
+                const safeProject = { ...project };
+                if (!safeProject.id || typeof safeProject.id !== 'string') {
+                    safeProject.id = `project-${index + 1}`;
+                }
+                return safeProject;
+            })
+        : [];
+
+    config.projects = projects.length > 0 ? projects : [{ ...DEFAULT_PROJECT }];
+    if (!config.projects.some(project => project.id === config.activeProjectId)) {
+        config.activeProjectId = config.projects[0].id;
+    }
+    return config;
+}
+
+function readConfigCandidate(filePath) {
+    if (!filePath) return null;
+    try {
+        if (!fs.existsSync(filePath)) return null;
+        const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        const stats = fs.statSync(filePath);
+        return {
+            filePath,
+            mtimeMs: stats.mtimeMs || 0,
+            config: normalizeConfig(raw)
+        };
+    } catch {
+        return null;
+    }
+}
+
+function getLatestConfigCandidate(filePaths) {
+    return filePaths
+        .map(readConfigCandidate)
+        .filter(Boolean)
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)[0] || null;
+}
+
+function writeConfigFile(filePath, config) {
+    if (!filePath) return;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf8');
+}
+
+function getDropboxConfigFile() {
+    const dropboxPath = getDropboxPath();
+    if (!dropboxPath) return null;
+    return path.join(dropboxPath, PROJECTS_BACKUP_FOLDER, DROPBOX_CONFIG_FILE_NAME);
+}
+
+function syncConfigToDropbox(config) {
+    const filePath = getDropboxConfigFile();
+    if (!filePath) return false;
+
+    const serialized = JSON.stringify(config, null, 2);
+    if (lastMirroredConfigJson === serialized && fs.existsSync(filePath)) return true;
+
+    try {
+        writeConfigFile(filePath, config);
+        lastMirroredConfigJson = serialized;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function restoreProjectsFromDropboxFolders() {
+    const dropboxPath = getDropboxPath();
+    if (!dropboxPath) return [];
+
+    const backupRoot = path.join(dropboxPath, PROJECTS_BACKUP_FOLDER);
+    if (!fs.existsSync(backupRoot)) return [];
+
+    try {
+        return fs.readdirSync(backupRoot, { withFileTypes: true })
+            .filter(entry => entry.isDirectory())
+            .filter(entry => projectFolderHasBackups(path.join(backupRoot, entry.name), entry.name))
+            .map((entry, index) => ({
+                id: makeRestoredProjectId(entry.name, index),
+                name: entry.name,
+                sourcePath: '',
+                appExe: '',
+                appName: entry.name,
+                restoredFromDropbox: true
+            }));
+    } catch {
+        return [];
+    }
+}
+
+function projectFolderHasBackups(projectDir, appName) {
+    try {
+        return fs.readdirSync(projectDir, { withFileTypes: true })
+            .some(entry =>
+                entry.isDirectory() &&
+                /^(\d{4})-(\d{2})/.test(entry.name) &&
+                fs.readdirSync(path.join(projectDir, entry.name), { withFileTypes: true })
+                    .some(child => child.isDirectory() && child.name.startsWith(appName))
+            );
+    } catch {
+        return false;
+    }
+}
+
+function makeRestoredProjectId(name, index) {
+    const slug = String(name || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    return `restored-${slug || `project-${index + 1}`}`;
 }
 
 function getActiveProject(config) {
@@ -103,11 +250,42 @@ function getDropboxStatus() {
     return { found: true, running: isDropboxRunning(), path: dropboxPath };
 }
 
+function getProjectsBackupRoot() {
+    const status = getDropboxStatus();
+    if (!status.found || !status.path) return null;
+    return path.join(status.path, PROJECTS_BACKUP_FOLDER);
+}
+
+function getProjectBackupPath(project) {
+    const backupRoot = getProjectsBackupRoot();
+    if (!backupRoot || !project?.appName) return null;
+    return path.join(backupRoot, project.appName);
+}
+
+function isProjectBackupPathSafe(targetPath, backupRoot) {
+    if (!targetPath || !backupRoot) return false;
+    const relative = path.relative(backupRoot, targetPath);
+    return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function removePathWithRetries(targetPath, maxAttempts = 5) {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            await fs.remove(targetPath);
+            return;
+        } catch (error) {
+            if ((error.code !== 'EBUSY' && error.code !== 'EPERM') || attempt === maxAttempts) {
+                throw error;
+            }
+            await new Promise(resolve => setTimeout(resolve, 700));
+        }
+    }
+}
+
 // {DropboxPath}/Projects Backup/{appName}  — created automatically if missing
 function resolveDestPath(project) {
-    const status = getDropboxStatus();
-    if (!status.found) return null;
-    const dest = path.join(status.path, PROJECTS_BACKUP_FOLDER, project.appName);
+    const dest = getProjectBackupPath(project);
+    if (!dest) return null;
     fs.mkdirSync(dest, { recursive: true });
     return dest;
 }
@@ -282,13 +460,34 @@ ipcMain.handle('update-project', (event, project) => {
     return { success: true };
 });
 
-ipcMain.handle('remove-project', (event, projectId) => {
+ipcMain.handle('remove-project', async (event, projectId) => {
     const config = loadConfig();
     if (config.projects.length <= 1) return { success: false, error: 'Πρέπει να υπάρχει τουλάχιστον ένα project.' };
+    const project = config.projects.find(p => p.id === projectId);
+    if (!project) return { success: false, error: 'Το project δεν βρέθηκε.' };
+
+    const backupRoot = getProjectsBackupRoot();
+    if (!backupRoot) {
+        return { success: false, error: 'Δεν βρέθηκε το Dropbox, οπότε δεν μπορώ να διαγράψω και τα αρχεία του project.' };
+    }
+
+    const backupPath = getProjectBackupPath(project);
+    if (!isProjectBackupPathSafe(backupPath, backupRoot)) {
+        return { success: false, error: 'Μη ασφαλές path διαγραφής project.' };
+    }
+
+    try {
+        if (fs.existsSync(backupPath)) {
+            await removePathWithRetries(backupPath);
+        }
+    } catch (error) {
+        return { success: false, error: `Αποτυχία διαγραφής αρχείων project: ${error.message}` };
+    }
+
     config.projects = config.projects.filter(p => p.id !== projectId);
     if (config.activeProjectId === projectId) config.activeProjectId = config.projects[0].id;
     saveConfig(config);
-    return { success: true };
+    return { success: true, deletedBackupPath: backupPath };
 });
 
 ipcMain.handle('set-active-project', (event, projectId) => {
@@ -456,6 +655,10 @@ function formatBytes(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+function makePartialBackupFolderName(backupName, timestamp) {
+    return `__partial__${backupName}__${timestamp}`;
+}
+
 async function copyFolderRecursive(source, dest, sourceRoot) {
     const entries = fs.readdirSync(source, { withFileTypes: true });
     for (const entry of entries) {
@@ -466,6 +669,8 @@ async function copyFolderRecursive(source, dest, sourceRoot) {
             fs.mkdirSync(destPath, { recursive: true });
             await copyFolderRecursive(srcPath, destPath, sourceRoot);
         } else {
+            const ext = path.extname(entry.name).toLowerCase();
+            if (EXCLUDED_FILE_EXTENSIONS.has(ext)) continue;
             fs.copyFileSync(srcPath, destPath);
         }
     }
@@ -496,6 +701,8 @@ ipcMain.handle('get-backups', async () => {
                 .forEach(f => {
                     const fullPath = path.join(monthPath, f);
                     const stats    = fs.statSync(fullPath);
+                    const infoPath = path.join(fullPath, '.backup-info.json');
+                    const sizeBytes = getFolderSizeRaw(fullPath);
                     let day = 0, version = 0;
                     const newMatch = f.match(/_D(\d+)_V(\d+)$/);
                     const oldMatch = f.match(/_V(\d+)_D(\d+)$/);
@@ -503,7 +710,8 @@ ipcMain.handle('get-backups', async () => {
                     else if (oldMatch) { version = parseInt(oldMatch[1]); day = parseInt(oldMatch[2]); }
 
                     let isMigrated = false;
-                    try { if (!fs.existsSync(path.join(fullPath, '.backup-info.json'))) isMigrated = true; } catch {}
+                    try { if (!fs.existsSync(infoPath)) isMigrated = true; } catch {}
+                    if (isMigrated && sizeBytes === 0) return;
 
                     allBackups.push({
                         name: f, path: fullPath,
@@ -511,7 +719,7 @@ ipcMain.handle('get-backups', async () => {
                         version, day,
                         date: stats.mtime.toLocaleString('el-GR'),
                         timestamp: stats.mtime.getTime(),
-                        size: getFolderSize(fullPath),
+                        size: formatBytes(sizeBytes),
                         isMigrated
                     });
                 });
@@ -528,10 +736,18 @@ ipcMain.handle('get-paths', async () => {
 });
 
 ipcMain.handle('create-backup', async () => {
+    let tempFolder = null;
     try {
         const config  = loadConfig();
         const project = getActiveProject(config);
         const { sourcePath, appExe, appName } = project;
+
+        if (!sourcePath || !fs.existsSync(sourcePath)) {
+            return {
+                success: false,
+                error: 'Το source path δεν βρέθηκε. Άνοιξε το Edit Project και σύνδεσέ το ξανά.'
+            };
+        }
 
         const dropboxStatus = getDropboxStatus();
         if (!dropboxStatus.found)
@@ -555,10 +771,12 @@ ipcMain.handle('create-backup', async () => {
 
         const monthPath  = path.join(destPath, monthFolder);
         const destFolder = path.join(monthPath, backupName);
-        fs.mkdirSync(destFolder, { recursive: true });
+        tempFolder = path.join(monthPath, makePartialBackupFolderName(backupName, now.getTime()));
+        fs.mkdirSync(monthPath, { recursive: true });
+        fs.mkdirSync(tempFolder, { recursive: true });
 
         mainWindow.webContents.send('backup-status', 'Αντιγραφή αρχείων...');
-        await copyFolderRecursive(sourcePath, destFolder, sourcePath);
+        await copyFolderRecursive(sourcePath, tempFolder, sourcePath);
 
         const metadata = {
             name: backupName, version, day, monthFolder,
@@ -567,14 +785,24 @@ ipcMain.handle('create-backup', async () => {
             displayDate: now.toLocaleString('el-GR')
         };
         fs.writeFileSync(
-            path.join(destFolder, '.backup-info.json'),
+            path.join(tempFolder, '.backup-info.json'),
             JSON.stringify(metadata, null, 2),
             'utf8'
         );
+        if (fs.existsSync(destFolder)) {
+            throw new Error(`Υπάρχει ήδη backup με όνομα "${backupName}".`);
+        }
+
+        mainWindow.webContents.send('backup-status', 'Ολοκλήρωση...');
+        await fs.move(tempFolder, destFolder, { overwrite: false });
+        tempFolder = null;
 
         mainWindow.webContents.send('backup-status', 'Ολοκληρώθηκε!');
         return { success: true, backupName, path: destFolder, monthFolder };
     } catch (error) {
+        if (tempFolder && fs.existsSync(tempFolder)) {
+            try { await removePathWithRetries(tempFolder); } catch {}
+        }
         return { success: false, error: error.message };
     }
 });
